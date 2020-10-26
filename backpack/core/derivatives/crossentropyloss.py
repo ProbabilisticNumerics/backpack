@@ -1,87 +1,123 @@
+"""Partial derivatives for cross-entropy loss."""
 from math import sqrt
-from warnings import warn
 
-from torch import diag, diag_embed, multinomial, ones_like, randn, softmax
+from torch import diag, diag_embed, einsum, multinomial, ones_like, softmax
 from torch import sqrt as torchsqrt
 from torch.nn import CrossEntropyLoss
 from torch.nn.functional import one_hot
 
-from ...utils.utils import einsum
-from .basederivatives import BaseDerivatives
-from .utils import hmp_unsqueeze_if_missing_dim
+from backpack.core.derivatives.basederivatives import BaseLossDerivatives
 
 
-class CrossEntropyLossDerivatives(BaseDerivatives):
+class CrossEntropyLossDerivatives(BaseLossDerivatives):
+    """Partial derivatives for cross-entropy loss.
+
+    The `torch.nn.CrossEntropyLoss` operation is a composition of softmax
+    and negative log-likelihood.
+    """
+
     def get_module(self):
+        """Return the `torch.nn` module for cross-entropy loss."""
         return CrossEntropyLoss
 
-    def sqrt_hessian(self, module, g_inp, g_out):
-        probs = self.get_probs(module)
-        tau = torchsqrt(probs)
-        Id = diag_embed(ones_like(probs))
-        Id_tautau = Id - einsum('ni,nj->nij', tau, tau)
-        sqrt_H = einsum('ni,nij->nij', tau, Id_tautau)
+    def _sqrt_hessian(self, module, g_inp, g_out):
+        self._check_2nd_order_parameters(module)
 
-        if module.reduction is "mean":
-            sqrt_H /= sqrt(module.input0.shape[0])
+        probs = self._get_probs(module)
+        tau = torchsqrt(probs)
+        V_dim, C_dim = 0, 2
+        Id = diag_embed(ones_like(probs), dim1=V_dim, dim2=C_dim)
+        Id_tautau = Id - einsum("nv,nc->vnc", tau, tau)
+        sqrt_H = einsum("nc,vnc->vnc", tau, Id_tautau)
+
+        if module.reduction == "mean":
+            N = module.input0.shape[0]
+            sqrt_H /= sqrt(N)
 
         return sqrt_H
 
-    def sqrt_hessian_sampled(self, module, g_inp, g_out):
-        M = self.MC_SAMPLES
+    def _sqrt_hessian_sampled(self, module, g_inp, g_out, mc_samples=1):
+        self._check_2nd_order_parameters(module)
+
+        M = mc_samples
         C = module.input0.shape[1]
 
-        probs = self.get_probs(module).unsqueeze(-1).repeat(1, 1, M)
+        probs = self._get_probs(module)
+        V_dim = 0
+        probs_unsqueezed = probs.unsqueeze(V_dim).repeat(M, 1, 1)
 
-        # HOTFIX (torch bug): multinomial not working with CUDA
-        original_dev = probs.device
-        if probs.is_cuda:
-            probs = probs.cpu()
+        multi = multinomial(probs, M, replacement=True)
+        classes = one_hot(multi, num_classes=C)
+        classes = einsum("nvc->vnc", classes).float()
 
-        classes = one_hot(multinomial(probs, M, replacement=True),
-                          num_classes=C)
+        sqrt_mc_h = (probs_unsqueezed - classes) / sqrt(M)
 
-        probs = probs.to(original_dev)
-        classes = classes.to(original_dev)
-        # END
-
-        classes = classes.transpose(1, 2).float()
-
-        sqrt_mc_h = (probs - classes) / sqrt(M)
-
-        if module.reduction is "mean":
-            sqrt_mc_h /= sqrt(module.input0.shape[0])
+        if module.reduction == "mean":
+            N = module.input0.shape[0]
+            sqrt_mc_h /= sqrt(N)
 
         return sqrt_mc_h
 
-    def sum_hessian(self, module, g_inp, g_out):
-        probs = self.get_probs(module)
-        sum_H = diag(probs.sum(0)) - einsum('bi,bj->ij', (probs, probs))
+    def _sum_hessian(self, module, g_inp, g_out):
+        self._check_2nd_order_parameters(module)
 
-        if module.reduction is "mean":
-            sum_H /= module.input0.shape[0]
+        probs = self._get_probs(module)
+        sum_H = diag(probs.sum(0)) - einsum("bi,bj->ij", (probs, probs))
+
+        if module.reduction == "mean":
+            N = module.input0.shape[0]
+            sum_H /= N
 
         return sum_H
 
-    def hessian_matrix_product(self, module, g_inp, g_out):
+    def _make_hessian_mat_prod(self, module, g_inp, g_out):
         """Multiplication of the input Hessian with a matrix."""
-        probs = self.get_probs(module)
+        self._check_2nd_order_parameters(module)
 
-        @hmp_unsqueeze_if_missing_dim(mat_dim=3)
-        def hmp(mat):
-            Hmat = einsum('bi,bic->bic',
-                          (probs, mat)) - einsum('bi,bj,bjc->bic',
-                                                 (probs, probs, mat))
+        probs = self._get_probs(module)
 
-            if module.reduction is "mean":
-                Hmat /= module.input0.shape[0]
+        def hessian_mat_prod(mat):
+            Hmat = einsum("bi,cbi->cbi", (probs, mat)) - einsum(
+                "bi,bj,cbj->cbi", (probs, probs, mat)
+            )
+
+            if module.reduction == "mean":
+                N = module.input0.shape[0]
+                Hmat /= N
 
             return Hmat
 
-        return hmp
+        return hessian_mat_prod
 
     def hessian_is_psd(self):
+        """Return whether cross-entropy loss Hessian is positive semi-definite."""
         return True
 
-    def get_probs(self, module):
+    def _get_probs(self, module):
         return softmax(module.input0, dim=1)
+
+    def _check_2nd_order_parameters(self, module):
+        """Verify that the parameters are supported by 2nd-order quantities.
+
+        Attributes:
+            module (torch.nn.CrossEntropyLoss): Extended CrossEntropyLoss module
+
+        Raises:
+            NotImplementedError: If module's setting is not implemented.
+        """
+        implemented_ignore_index = -100
+        implemented_weight = None
+
+        if module.ignore_index != implemented_ignore_index:
+            raise NotImplementedError(
+                "Only default ignore_index ({}) is implemented, got {}".format(
+                    implemented_ignore_index, module.ignore_index
+                )
+            )
+
+        if module.weight != implemented_weight:
+            raise NotImplementedError(
+                "Only default weight ({}) is implemented, got {}".format(
+                    implemented_weight, module.weight
+                )
+            )

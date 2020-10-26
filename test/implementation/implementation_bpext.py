@@ -1,14 +1,16 @@
 import torch
-from .implementation import Implementation
+
+import backpack.extensions as new_ext
 from backpack import backpack
 from backpack.extensions.curvature import Curvature
-from backpack.extensions.secondorder.utils import matrix_from_kron_facs
 from backpack.extensions.secondorder.hbp import (
-    ExpectationApproximation,
     BackpropStrategy,
+    ExpectationApproximation,
     LossHessianStrategy,
 )
-import backpack.extensions as new_ext
+from backpack.utils.kroneckers import kfacs_to_mat
+
+from .implementation import Implementation
 
 
 class BpextImpl(Implementation):
@@ -40,10 +42,15 @@ class BpextImpl(Implementation):
         return sgs
 
     def diag_ggn(self):
-        print(self.model)
         with backpack(new_ext.DiagGGN()):
             self.loss().backward()
             diag_ggn = [p.diag_ggn for p in self.model.parameters()]
+        return diag_ggn
+
+    def diag_ggn_mc(self):
+        with backpack(new_ext.DiagGGNMC()):
+            self.loss().backward()
+            diag_ggn = [p.diag_ggn_mc for p in self.model.parameters()]
         return diag_ggn
 
     def diag_h(self):
@@ -58,23 +65,32 @@ class BpextImpl(Implementation):
     def hmp(self, mat_list):
         assert len(mat_list) == len(list(self.model.parameters()))
         results = []
-        with backpack(new_ext.CMP(Curvature.HESSIAN)):
+        with backpack(new_ext.HMP()):
             self.loss().backward()
             for p, mat in zip(self.model.parameters(), mat_list):
-                results.append(p.cmp(mat))
+                results.append(p.hmp(mat))
         return results
 
     def ggn_mp(self, mat_list):
         assert len(mat_list) == len(list(self.model.parameters()))
         results = []
-        with backpack(new_ext.CMP(Curvature.GGN)):
+        with backpack(new_ext.GGNMP()):
             self.loss().backward()
             for p, mat in zip(self.model.parameters(), mat_list):
-                results.append(p.cmp(mat))
+                results.append(p.ggnmp(mat))
         return results
 
     def ggn_vp(self, vec_list):
         return self.ggn_mp(vec_list)
+
+    def pchmp(self, mat_list, modify):
+        assert len(mat_list) == len(list(self.model.parameters()))
+        results = []
+        with backpack(new_ext.PCHMP(modify=modify)):
+            self.loss().backward()
+            for p, mat in zip(self.model.parameters(), mat_list):
+                results.append(p.pchmp(mat))
+        return results
 
     def matrices_from_kronecker_curvature(self, extension_cls, savefield):
         results = []
@@ -82,7 +98,7 @@ class BpextImpl(Implementation):
             self.loss().backward()
             for p in self.model.parameters():
                 factors = getattr(p, savefield)
-                results.append(matrix_from_kron_facs(factors))
+                results.append(kfacs_to_mat(factors))
         return results
 
     def kfra_blocks(self):
@@ -94,23 +110,26 @@ class BpextImpl(Implementation):
     def kfac_blocks(self):
         return self.matrices_from_kronecker_curvature(new_ext.KFAC, "kfac")
 
-    def hbp_with_curv(self,
-                      curv_type,
-                      loss_hessian_strategy=LossHessianStrategy.AVERAGE,
-                      backprop_strategy=BackpropStrategy.BATCH_AVERAGE,
-                      ea_strategy=ExpectationApproximation.BOTEV_MARTENS):
+    def hbp_with_curv(
+        self,
+        curv_type,
+        loss_hessian_strategy=LossHessianStrategy.SUM,
+        backprop_strategy=BackpropStrategy.BATCH_AVERAGE,
+        ea_strategy=ExpectationApproximation.BOTEV_MARTENS,
+    ):
         results = []
         with backpack(
-                new_ext.HBP(
-                    curv_type=curv_type,
-                    loss_hessian_strategy=loss_hessian_strategy,
-                    backprop_strategy=backprop_strategy,
-                    ea_strategy=ea_strategy,
-                )):
+            new_ext.HBP(
+                curv_type=curv_type,
+                loss_hessian_strategy=loss_hessian_strategy,
+                backprop_strategy=backprop_strategy,
+                ea_strategy=ea_strategy,
+            )
+        ):
             self.loss().backward()
             for p in self.model.parameters():
                 factors = p.hbp
-                results.append(matrix_from_kron_facs(factors))
+                results.append(kfacs_to_mat(factors))
         return results
 
     def hbp_single_sample_ggn_blocks(self):

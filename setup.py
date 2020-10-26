@@ -8,10 +8,18 @@ AUTHORS = "F. Dangel, F. Kunstner"
 NAME = "backpack-for-pytorch"
 PACKAGES = find_packages()
 
-DESCRIPTION = r"""BACKpropagation PACKage - A backpack for PyTorch to compute quantities beyond the gradient."""
-LONG_DESCR = "https://github.com/f-dangel/backpack"
+DESCRIPTION = "BackPACK: Packing more into backprop"
+LONG_DESCR = """
+    BackPACK is built on top of PyTorch.
+    It efficiently computes quantities other than the gradient.
 
-VERSION = "1.0.1"
+    Website: https://backpack.pt
+    Code: https://github.com/f-dangel/backpack
+    Documentation: https://readthedocs.org/projects/backpack/
+    Bug reports & feature requests: https://github.com/f-dangel/backpack/issues
+    """
+
+VERSION = "1.2.0"
 URL = "https://github.com/f-dangel/backpack"
 LICENSE = "MIT"
 
@@ -23,15 +31,17 @@ REQUIREMENTS_PATH = path.join(path.abspath(__file__), REQUIREMENTS_FILE)
 with open(REQUIREMENTS_FILE) as f:
     requirements = f.read().splitlines()
 
-setup(author=AUTHORS,
-      name=NAME,
-      version=VERSION,
-      description=DESCRIPTION,
-      long_description=LONG_DESCR,
-      long_description_content_type="text/markdown",
-      install_requires=requirements,
-      url=URL,
-      license=LICENSE,
-      packages=PACKAGES,
-      zip_safe=False,
-      python_requires='>=3.5')
+setup(
+    author=AUTHORS,
+    name=NAME,
+    version=VERSION,
+    description=DESCRIPTION,
+    long_description=LONG_DESCR,
+    long_description_content_type="text/markdown",
+    install_requires=requirements,
+    url=URL,
+    license=LICENSE,
+    packages=PACKAGES,
+    zip_safe=False,
+    python_requires=">=3.6",
+)
